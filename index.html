@@ -18,7 +18,8 @@
     const CHAR_SET = " .'`^\":,;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
     const PALETTE = ['#000000','#ff0000','#00ff00','#ffff00','#0000ff','#ff00ff','#00ffff','#ffffff'];
 
-    const CELL_SIZE   = 9;
+    // Spiral + render params
+    let   CELL_SIZE;                 // responsive (set in resize)
     const SPEED       = 0.2;
     const TURNS       = 5.0;
     const RAD_FREQ    = 0.5;
@@ -56,7 +57,7 @@
     // Colors for button states
     const BTN_BG_DEFAULT = "#0000FF"; // blue
     const BTN_BG_HOVER   = "#FF00FF"; // pink
-    const BTN_BG_ACTIVE  = "#00FFFF"; // cyan
+    const BTN_BG_ACTIVE  = "#FF0000"; // red
     const BTN_FG         = "#FFFFFF"; // text/border
 
     const view = document.getElementById('view');
@@ -77,6 +78,8 @@
     let hoverBtn = false;
     let activeBtn = false;
 
+    function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
     function buildScanlines(){
       const px = Math.max(2, Math.round(dpr*2));
       scan.width = 2;
@@ -88,11 +91,51 @@
       scx.fillRect(0, 1, scan.width, px-1);
     }
 
+    function bannerData(){
+      const lines = BANNER.split('\n');
+      const widthChars = Math.max(...lines.map(s=>s.length));
+      const heightChars = lines.length;
+      return { lines, widthChars, heightChars };
+    }
+
+    function computeButtonPlacement(){
+      const B = bannerData();
+      const cx = cols * 0.5;
+      // Button width is longest line length
+      btnW = Math.max(...BUTTON_LINES.map(l => l.length));
+      // Center the button horizontally
+      btnGX = Math.floor(cx - btnW/2);
+      // Place it one empty line below the banner box
+      const bannerTop = Math.floor(rows * 0.5 - B.heightChars/2);
+      btnGY = bannerTop + B.heightChars + 1; // +1 line gap
+    }
+
     function resize(){
       dpr = Math.min(window.devicePixelRatio||1, 2);
       const cssW = Math.floor(window.innerWidth);
       const cssH = Math.floor(window.innerHeight);
 
+      // Responsive CELL_SIZE:
+      // - min 9px on small screens
+      // - up to 24px around 1920px width and beyond
+      const minCell = 9;
+      const maxCell = 24;
+      const refW    = 1920;
+
+      // Base size scales with width
+      let targetCell = Math.floor(cssW / (refW / maxCell));
+      targetCell = clamp(targetCell, minCell, maxCell);
+
+      // Ensure the banner (or button if wider) fits horizontally:
+      const B = bannerData();
+      const widestChars = Math.max(B.widthChars, Math.max(...BUTTON_LINES.map(l => l.length)));
+      const maxByChars  = Math.floor(cssW / (widestChars * ADV_X));
+      // If maxByChars is valid, cap the cell size to avoid clipping
+      if (maxByChars > 0) targetCell = Math.min(targetCell, maxByChars);
+
+      CELL_SIZE = targetCell;
+
+      // Set canvas sizes/transforms
       view.width = Math.floor(cssW * dpr);
       view.height = Math.floor(cssH * dpr);
       view.style.width = cssW + 'px';
@@ -113,7 +156,7 @@
       sctx.textBaseline = 'top';
 
       buildScanlines();
-      computeButtonPlacement(); // recalc button grid rect
+      computeButtonPlacement(); // recalc button grid rect with new cols/rows
     }
     window.addEventListener('resize', resize);
 
@@ -124,25 +167,6 @@
       return CHAR_SET[idx];
     }
     const TAU = Math.PI * 2;
-
-    function bannerData(){
-      const lines = BANNER.split('\n');
-      const widthChars = Math.max(...lines.map(s=>s.length));
-      const heightChars = lines.length;
-      return { lines, widthChars, heightChars };
-    }
-
-    function computeButtonPlacement(){
-      const B = bannerData();
-      const cx = cols * 0.5;
-      // Button width is longest line length
-      btnW = Math.max(...BUTTON_LINES.map(l => l.length));
-      // Center the button horizontally
-      btnGX = Math.floor(cx - btnW/2);
-      // Place it one empty line below the banner box
-      const bannerTop = Math.floor(rows * 0.5 - B.heightChars/2);
-      btnGY = bannerTop + B.heightChars + 1; // +1 line gap
-    }
 
     function drawChar(ctx, gx, gy, ch, color){
       ctx.save();
@@ -192,6 +216,7 @@
       activeBtn = false;
     });
 
+    // Animation (locked 12 FPS)
     const TARGET_FPS = 12;
     const STEP_MS = 1000 / TARGET_FPS;
     let lastStep = 0;
@@ -214,7 +239,7 @@
       const startGX = Math.floor(cx - B.widthChars/2);
       const startGY = Math.floor(cy - B.heightChars/2);
 
-      // Precompute button state colors
+      // Button state colors
       const btnBg = activeBtn ? BTN_BG_ACTIVE : (hoverBtn ? BTN_BG_HOVER : BTN_BG_DEFAULT);
 
       for(let gy=0; gy<rows; gy++){
@@ -232,7 +257,7 @@
           const colorPhase = (ang/TAU)*COLOR_ANGULAR + r*COLOR_RADIAL - simTime*COLOR_SCROLL;
           let color = PALETTE[((Math.floor(colorPhase * 8) % 8) + 8) % 8];
 
-          // Draw banner characters (white on black)
+          // Banner draw (white glyphs on black)
           let drawnByBanner = false;
           const bi = gx - startGX;
           const bj = gy - startGY;
@@ -249,25 +274,25 @@
             }
           }
 
-          // Draw ASCII button below banner (with colored background)
+          // Button draw (colored cell background + white glyphs)
           if (!drawnByBanner && gy >= btnGY && gy < btnGY + btnH){
             const li = gy - btnGY;
             const lj = gx - btnGX;
             const line = BUTTON_LINES[li] || '';
             if (lj >= 0 && lj < line.length){
               const bch2 = line[lj];
-              // Draw background for the whole button cell (including border and text)
+
+              // fill background cell
               sctx.save();
               sctx.translate(gx * CELL_SIZE * ADV_X, gy * CELL_SIZE);
               sctx.fillStyle = btnBg;
-              // cover the full cell area in CSS pixels
               sctx.fillRect(0, 0, CELL_SIZE * ADV_X, CELL_SIZE);
               sctx.restore();
 
               if (bch2 !== ' '){
                 ch = bch2; color = BTN_FG;
               } else {
-                ch = ' '; color = btnBg; // keep bg visible even if space
+                ch = ' '; color = btnBg;
               }
             }
           }
@@ -282,6 +307,7 @@
       vctx.globalCompositeOperation = 'source-over';
       vctx.drawImage(scene, 0, 0, view.width/dpr, view.height/dpr);
 
+      // Soft glow/bloom
       vctx.save();
       vctx.globalCompositeOperation = 'lighter';
       vctx.globalAlpha = 0.24;
@@ -292,12 +318,14 @@
       vctx.drawImage(scene, 0, 0, view.width/dpr, view.height/dpr);
       vctx.restore();
 
+      // Subtle vignette
       const grd = vctx.createRadialGradient(W*0.5, H*0.5, Math.min(W,H)*0.2, W*0.5, H*0.5, Math.max(W,H)*0.7);
       grd.addColorStop(0, 'rgba(0,0,0,0)');
       grd.addColorStop(1, 'rgba(0,0,0,0.25)');
       vctx.fillStyle = grd;
       vctx.fillRect(0,0,W,H);
 
+      // Scanlines overlay
       const pat = vctx.createPattern(scan, 'repeat');
       vctx.save();
       vctx.globalCompositeOperation = 'multiply';
@@ -307,6 +335,7 @@
       vctx.fillRect(0,0,W,H);
       vctx.restore();
 
+      // Tiny brightness flicker
       vctx.save();
       vctx.globalCompositeOperation = 'overlay';
       vctx.globalAlpha = 0.02 * (Math.sin(simTime*80) + Math.sin(simTime*123));
@@ -324,7 +353,12 @@
           await new Promise(res => link.addEventListener('load', res, { once:true }));
         }
         if ('fonts' in document){
-          await document.fonts.load(`${CELL_SIZE}px ${FONT_FAMILY}`);
+          // Load a couple of sizes to improve first paint reliability across DPIs
+          await Promise.all([
+            document.fonts.load(`12px ${FONT_FAMILY}`),
+            document.fonts.load(`16px ${FONT_FAMILY}`),
+            document.fonts.load(`24px ${FONT_FAMILY}`)
+          ]);
           await document.fonts.ready;
         }
       }catch(e){}
@@ -340,7 +374,3 @@
   </script>
 </body>
 </html>
-
-
-
-
