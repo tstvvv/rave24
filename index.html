@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono&display=swap" rel="stylesheet">
+  <title>RAVE24.NET</title>
+  <style>
+    html, body { height:100%; margin:0; background:#000; overflow:hidden; }
+    canvas { display:block; width:100vw; height:100vh; }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+
+  <script>
+    const FONT_FAMILY = `'Roboto Mono', 'Consolas', 'Lucida Console', monospace`;
+    const CHAR_SET = " .'`^\":,;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
+    const PALETTE = ['#000000','#ff0000','#00ff00','#ffff00','#0000ff','#ff00ff','#00ffff','#ffffff'];
+
+    const CELL_SIZE   = 24;
+    const SPEED       = 0.2;
+    const TURNS       = 5.0;
+    const RAD_FREQ    = 0.5;
+    const CONTRAST    = 0.5;
+    const COLOR_SCROLL= 0.5;
+
+    const NARROW_X    = 0.7;   // squeeze individual glyphs horizontally
+    const ADV_X       = 0.6;   // <1.0 tightens horizontal spacing between cells
+    const COLOR_RADIAL = 0.025;
+    const COLOR_ANGULAR = 1.0;
+
+    // Banner (unchanged)
+    const BANNER = String.raw`
++-------------------------------------------------------------+
+|                                                             |
+|     ____  ___ _    ___________  __ __    _   ______________ |
+|    / __ \/   | |  / / ____/__ \/ // /   / | / / ____/_  __/ |
+|   / /_/ / /| | | / / __/  __/ / // /_  /  |/ / __/   / /    |
+|  / _, _/ ___ | |/ / /___ / __/__  __/ / /|  / /___  / /     |
+| /_/ |_/_/  |_|___/_____//____/ /_/ (_)_/ |_/_____/ /_/      |
+|                                                             |
+| [data dreams]       [ritual virtuality]       [brain dance] |
+|                                                             |
++-------------------------------------------------------------+`;
+    const BANNER_COLOR = '#ffffff';
+
+    // ASCII button (drawn inside canvas, below banner)
+    const BUTTON_LINES = [
+      "┌───────────────────┐",
+      "│ ENTER THE VOID... │",
+      "└───────────────────┘"
+    ];
+    const BUTTON_LINK = "https://rave24.net";
+
+    // Colors for button states
+    const BTN_BG_DEFAULT = "#0000FF"; // blue
+    const BTN_BG_HOVER   = "#FF00FF"; // pink
+    const BTN_BG_ACTIVE  = "#00FFFF"; // cyan
+    const BTN_FG         = "#FFFFFF"; // text/border
+
+    const view = document.getElementById('view');
+    const vctx = view.getContext('2d');
+
+    const scene = document.createElement('canvas');
+    const sctx  = scene.getContext('2d');
+
+    const scan = document.createElement('canvas');
+    const scx  = scan.getContext('2d');
+
+    let W=0,H=0,cols=0,rows=0,dpr=1;
+
+    // Button placement (in grid coords), computed after we know banner size
+    let btnGX=0, btnGY=0, btnW=0, btnH=BUTTON_LINES.length;
+
+    // Mouse state for hover/click
+    let hoverBtn = false;
+    let activeBtn = false;
+
+    function buildScanlines(){
+      const px = Math.max(2, Math.round(dpr*2));
+      scan.width = 2;
+      scan.height = px;
+      scx.clearRect(0,0,scan.width,scan.height);
+      scx.fillStyle = 'rgba(255,255,255,0.06)';
+      scx.fillRect(0, 0, scan.width, 1);
+      scx.fillStyle = 'rgba(0,0,0,0.20)';
+      scx.fillRect(0, 1, scan.width, px-1);
+    }
+
+    function resize(){
+      dpr = Math.min(window.devicePixelRatio||1, 2);
+      const cssW = Math.floor(window.innerWidth);
+      const cssH = Math.floor(window.innerHeight);
+
+      view.width = Math.floor(cssW * dpr);
+      view.height = Math.floor(cssH * dpr);
+      view.style.width = cssW + 'px';
+      view.style.height = cssH + 'px';
+      vctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      vctx.imageSmoothingEnabled = false;
+
+      scene.width = Math.floor(cssW * dpr);
+      scene.height = Math.floor(cssH * dpr);
+      sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sctx.imageSmoothingEnabled = false;
+
+      W = cssW; H = cssH;
+      cols = Math.floor(W / (CELL_SIZE * ADV_X));
+      rows = Math.floor(H / CELL_SIZE);
+
+      sctx.font = `${CELL_SIZE}px ${FONT_FAMILY}`;
+      sctx.textBaseline = 'top';
+
+      buildScanlines();
+      computeButtonPlacement(); // recalc button grid rect
+    }
+    window.addEventListener('resize', resize);
+
+    function glyphFor(l){
+      l = Math.max(0, Math.min(1, l));
+      l = Math.pow(l, CONTRAST);
+      const idx = Math.max(0, Math.min(CHAR_SET.length-1, Math.floor(l * CHAR_SET.length)));
+      return CHAR_SET[idx];
+    }
+    const TAU = Math.PI * 2;
+
+    function bannerData(){
+      const lines = BANNER.split('\n');
+      const widthChars = Math.max(...lines.map(s=>s.length));
+      const heightChars = lines.length;
+      return { lines, widthChars, heightChars };
+    }
+
+    function computeButtonPlacement(){
+      const B = bannerData();
+      const cx = cols * 0.5;
+      // Button width is longest line length
+      btnW = Math.max(...BUTTON_LINES.map(l => l.length));
+      // Center the button horizontally
+      btnGX = Math.floor(cx - btnW/2);
+      // Place it one empty line below the banner box
+      const bannerTop = Math.floor(rows * 0.5 - B.heightChars/2);
+      btnGY = bannerTop + B.heightChars + 1; // +1 line gap
+    }
+
+    function drawChar(ctx, gx, gy, ch, color){
+      ctx.save();
+      // Use tighter advance (ADV_X) so rows fill the full width without right gap
+      ctx.translate(gx * CELL_SIZE * ADV_X, gy * CELL_SIZE);
+      ctx.scale(NARROW_X, 1);
+      ctx.fillStyle = color;
+      ctx.fillText(ch, 0, 0);
+      ctx.restore();
+    }
+
+    // Hit-test helper: map mouse to grid coords
+    function mouseToGrid(ev){
+      const rect = view.getBoundingClientRect();
+      const mx = ev.clientX - rect.left;
+      const my = ev.clientY - rect.top;
+      const gx = Math.floor(mx / (CELL_SIZE * ADV_X));
+      const gy = Math.floor(my / CELL_SIZE);
+      return { gx, gy };
+    }
+
+    // Button rect test
+    function inButton(gx, gy){
+      return gx >= btnGX && gx < btnGX + btnW &&
+             gy >= btnGY && gy < btnGY + btnH;
+    }
+
+    // Mouse events for hover/click color + navigation
+    view.addEventListener('mousemove', (e)=>{
+      const {gx, gy} = mouseToGrid(e);
+      hoverBtn = inButton(gx, gy);
+    });
+    view.addEventListener('mousedown', (e)=>{
+      const {gx, gy} = mouseToGrid(e);
+      activeBtn = inButton(gx, gy);
+    });
+    view.addEventListener('mouseup', (e)=>{
+      const {gx, gy} = mouseToGrid(e);
+      const wasActive = activeBtn;
+      activeBtn = false;
+      if (wasActive && inButton(gx, gy)){
+        window.open(BUTTON_LINK, '_blank', 'noopener');
+      }
+    });
+    view.addEventListener('mouseleave', ()=>{
+      hoverBtn = false;
+      activeBtn = false;
+    });
+
+    const TARGET_FPS = 12;
+    const STEP_MS = 1000 / TARGET_FPS;
+    let lastStep = 0;
+    let simTime = 0;
+
+    function frame(now){
+      if (!lastStep) lastStep = now;
+      const delta = now - lastStep;
+      if (delta < STEP_MS){ requestAnimationFrame(frame); return; }
+      const dt = delta / 1000;
+      lastStep = now;
+      simTime += dt;
+
+      sctx.fillStyle = '#000';
+      sctx.fillRect(0,0,W,H);
+
+      const cx = cols * 0.5;
+      const cy = rows * 0.5;
+      const B = bannerData();
+      const startGX = Math.floor(cx - B.widthChars/2);
+      const startGY = Math.floor(cy - B.heightChars/2);
+
+      // Precompute button state colors
+      const btnBg = activeBtn ? BTN_BG_ACTIVE : (hoverBtn ? BTN_BG_HOVER : BTN_BG_DEFAULT);
+
+      for(let gy=0; gy<rows; gy++){
+        for(let gx=0; gx<cols; gx++){
+          const x = gx - cx;
+          const y = gy - cy;
+          const r = Math.hypot(x, y) + 1e-6;
+          const a = Math.atan2(y, x);
+          const ang = (a + TAU) % TAU;
+
+          const field = Math.sin(ang*TURNS + r*RAD_FREQ - simTime*SPEED);
+          const l = field * 0.5 + 0.5;
+          let ch = glyphFor(l);
+
+          const colorPhase = (ang/TAU)*COLOR_ANGULAR + r*COLOR_RADIAL - simTime*COLOR_SCROLL;
+          let color = PALETTE[((Math.floor(colorPhase * 8) % 8) + 8) % 8];
+
+          // Draw banner characters (white on black)
+          let drawnByBanner = false;
+          const bi = gx - startGX;
+          const bj = gy - startGY;
+          if (bj >= 0 && bj < B.heightChars){
+            const line = B.lines[bj] || '';
+            if (bi >= 0 && bi < line.length){
+              const bch = line[bi];
+              if (bch !== ' '){
+                ch = bch; color = '#ffffff';
+                drawnByBanner = true;
+              } else {
+                ch = ' '; color = '#000000';
+              }
+            }
+          }
+
+          // Draw ASCII button below banner (with colored background)
+          if (!drawnByBanner && gy >= btnGY && gy < btnGY + btnH){
+            const li = gy - btnGY;
+            const lj = gx - btnGX;
+            const line = BUTTON_LINES[li] || '';
+            if (lj >= 0 && lj < line.length){
+              const bch2 = line[lj];
+              // Draw background for the whole button cell (including border and text)
+              sctx.save();
+              sctx.translate(gx * CELL_SIZE * ADV_X, gy * CELL_SIZE);
+              sctx.fillStyle = btnBg;
+              // cover the full cell area in CSS pixels
+              sctx.fillRect(0, 0, CELL_SIZE * ADV_X, CELL_SIZE);
+              sctx.restore();
+
+              if (bch2 !== ' '){
+                ch = bch2; color = BTN_FG;
+              } else {
+                ch = ' '; color = btnBg; // keep bg visible even if space
+              }
+            }
+          }
+
+          drawChar(sctx, gx, gy, ch, color);
+        }
+      }
+
+      vctx.clearRect(0,0,W,H);
+      vctx.filter = 'none';
+      vctx.globalAlpha = 1;
+      vctx.globalCompositeOperation = 'source-over';
+      vctx.drawImage(scene, 0, 0, view.width/dpr, view.height/dpr);
+
+      vctx.save();
+      vctx.globalCompositeOperation = 'lighter';
+      vctx.globalAlpha = 0.24;
+      vctx.filter = 'blur(2px)';
+      vctx.drawImage(scene, 0, 0, view.width/dpr, view.height/dpr);
+      vctx.globalAlpha = 0.12;
+      vctx.filter = 'blur(6px)';
+      vctx.drawImage(scene, 0, 0, view.width/dpr, view.height/dpr);
+      vctx.restore();
+
+      const grd = vctx.createRadialGradient(W*0.5, H*0.5, Math.min(W,H)*0.2, W*0.5, H*0.5, Math.max(W,H)*0.7);
+      grd.addColorStop(0, 'rgba(0,0,0,0)');
+      grd.addColorStop(1, 'rgba(0,0,0,0.25)');
+      vctx.fillStyle = grd;
+      vctx.fillRect(0,0,W,H);
+
+      const pat = vctx.createPattern(scan, 'repeat');
+      vctx.save();
+      vctx.globalCompositeOperation = 'multiply';
+      const flicker = 0.9 + 0.1 * Math.sin(simTime * 120);
+      vctx.globalAlpha = 0.35 * flicker;
+      vctx.fillStyle = pat;
+      vctx.fillRect(0,0,W,H);
+      vctx.restore();
+
+      vctx.save();
+      vctx.globalCompositeOperation = 'overlay';
+      vctx.globalAlpha = 0.02 * (Math.sin(simTime*80) + Math.sin(simTime*123));
+      vctx.fillStyle = '#fff';
+      vctx.fillRect(0,0,W,H);
+      vctx.restore();
+
+      requestAnimationFrame(frame);
+    }
+
+    async function ensureFontLoaded(){
+      try{
+        const link = document.querySelector('link[href*="fonts.googleapis.com"]');
+        if (link && !link.sheet){
+          await new Promise(res => link.addEventListener('load', res, { once:true }));
+        }
+        if ('fonts' in document){
+          await document.fonts.load(`${CELL_SIZE}px ${FONT_FAMILY}`);
+          await document.fonts.ready;
+        }
+      }catch(e){}
+    }
+
+    async function start(){
+      await ensureFontLoaded();
+      resize();
+      requestAnimationFrame(frame);
+    }
+
+    start();
+  </script>
+</body>
+</html>
